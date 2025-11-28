@@ -1,82 +1,126 @@
 from database.db import DB
-from models.product import Product
 from models.restaurant import Restaurant
+
 
 class RestaurantService:
     def __init__(self, email: str, password: str):
-        self.db = DB() # Cria uma instância do banco de dados
-        self.email = email
+        self.db = DB()
+        self.email = email.lower().strip()
         self.password = password
-        self.restaurant = self.db.get_restaurant(email, password) # Tenta autenticar o restaurante com base no e-mail e senha
+        self.restaurant: Restaurant | None = self.db.login(self.email, self.password) # Login com as informações passadas
 
-    def is_authenticated(self) -> bool: #Retorna True se o restaurante estiver autenticado corretamente.
+
+    def _is_authenticated(self) -> bool: # Verifica se o restaurante existe no DB
         return self.restaurant is not None
-    
-    def add_product(self, name: str, price: float) -> str: # Adiciona um novo produto ao menu do restaurante
-        if not self.is_authenticated():
-            return "Falha no login: restaurante não encontrado."
-        
-        # Validação do nome
+
+
+    def _validate_product(self, name: str, price: float): # Validação do Produto
+        name = name.strip()
+
         if len(name) <= 4:
             return "O nome do produto deve ter mais de 4 caracteres."
-        
-        # Validação do preço
         if price <= 0:
             return "O preço do produto deve ser maior que zero."
-        
-        restaurantes = self.db.load_json()
 
-        # Encontra o restaurante autenticado
-        for pk in restaurantes:
-            if pk['pk'] == self.restaurant['pk']:
-                for produto in pk['menu']:
-                    if produto['name'].lower() == name.lower():
-                        return f"O produto '{name}' já existe no menu de {self.restaurant['restaurant_name']}."
+        return None
 
-                # Cria um novo produto e adiciona ao menu
-                product = Product(None, name, price)
-                pk["menu"].append(product.to_dict())
 
-                self.db.dump_json(restaurantes)
-
-                return f"Produto '{name}' adicionado ao menu de {pk['restaurant_name']}."
-        return "Restaurante não encontrado."
-
-    def update_commission(self, commission: float) -> str: # Atualiza a comissão do restaurante autenticado.
-        if not self.is_authenticated():
+    def add_product(self, name: str, price: float) -> str: # Adiciona produto
+        if not self._is_authenticated():
             return "Falha no login: restaurante não encontrado."
-        
-        if not Restaurant.validate_commission(commission):
+
+        erro = self._validate_product(name, price) # Valida nome e preço do produto
+        if erro:
+            return erro
+
+        name = name.strip().lower() # Retira os espaços em branco das pontas e ganrante lowercase
+
+        conn = self.db.get_conn() # Conexão com DB
+        cur = conn.cursor()
+
+        # Verificar duplicidade do produto
+        cur.execute(
+            """
+            SELECT id FROM product
+            WHERE LOWER(nome) = LOWER(?) AND restaurant_id = ?
+            """,
+            (name, self.restaurant.pk)
+        )
+
+        if cur.fetchone():  # Verifica se ao menos uma linha atende ao requisito, no caso se o produto já existe atrelado aquele Restaurante
+            return f"O produto '{name}' já existe no menu."
+
+        # Inseri o produto na tabela
+        cur.execute(
+            """
+            INSERT INTO product (nome, preco, restaurant_id)
+            VALUES (?, ?, ?)
+            """,
+            (name, price, self.restaurant.pk)
+        )
+        conn.commit() # Salva as alterações
+        conn.close() # Fecha o DB
+
+        return f"Produto '{name}' adicionado com sucesso."
+
+
+    def delete_product(self, product_pk: int) -> str: # Remove produto
+        if not self._is_authenticated():
+            return "Falha no login: restaurante não encontrado."
+
+        conn = self.db.get_conn() # Conexão como o DB
+        cur = conn.cursor() # Envia os comandos ao SQL
+
+        cur.execute(
+            """
+            SELECT nome FROM product
+            WHERE id = ? AND restaurant_id = ?
+            """,
+            (product_pk, self.restaurant.pk)
+        )
+
+        row = cur.fetchone() # Verifica existencia de uma linha do comando pedido acima
+
+        if not row:
+            return "Produto não encontrado."
+
+        product_name = row["nome"]
+
+        # Deleta o produto para o Restaurante selecionado restaurante_id = ?
+        cur.execute(
+            """
+            DELETE FROM product
+            WHERE id = ? AND restaurant_id = ?
+            """,
+            (product_pk, self.restaurant.pk)
+        )
+        conn.commit() # Salva as alterações
+        conn.close() # Fecha o DB
+
+        return f"O produto '{product_name}' foi removido com sucesso."
+
+
+    def update_commission(self, commission: float) -> str: # Atualiza comissão
+        if not self._is_authenticated():
+            return "Falha no login: restaurante não encontrado."
+
+        if not Restaurant._validate_commission(commission): # Valida comissão
             return "A comissão deve ser maior ou igual a 0."
 
-        restaurantes = self.db.load_json()
+        conn = self.db.get_conn()
+        cur = conn.cursor()
 
+        # Atualiza a comissão do Restaurante quando a id existir.
+        cur.execute(
+            """
+            UPDATE restaurant
+            SET commission = ?
+            WHERE id = ?
+            """,
+            (commission, self.restaurant.pk)
+        )
 
-        # Atualiza a comissão no restaurante correspondente
-        for pk in restaurantes:
-            if pk['pk'] == self.restaurant['pk']:
-                pk["commission"] = int(commission)
+        conn.commit() # Salva o DB
+        conn.close() # Fecha o DB
 
-                self.db.dump_json(restaurantes)
-
-                return f"A comissão do {pk['restaurant_name']} foi atualizada para {commission}."
-        return "Restaurante não encontrado."
-
-    def delete_product(self, product_pk: int) -> str: # Exclui um produto do menu
-        if not self.is_authenticated():
-            return "Falha no login: restaurante não encontrado."
-        
-        restaurantes = self.db.load_json()
-
-        # Busca o restaurante autenticado
-        for pk in restaurantes:
-            if pk['pk'] == self.restaurant['pk']:
-                for menu in pk['menu']:
-                    if menu['pk'] == product_pk:
-                        nome_produto = menu['name']
-                        pk['menu'].remove(menu)
-
-                        self.db.dump_json(restaurantes)
-
-                        return f"O produto {nome_produto} foi removido do menu --> {pk['restaurant_name']}."
-        return "Produto não encontrado no menu."
+        return f"Comissão atualizada para {commission} com sucesso."

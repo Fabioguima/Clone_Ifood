@@ -1,36 +1,42 @@
-import datetime
-from typing import Union
-
 from fastapi import FastAPI
 from database.db import DB
 from models.restaurant import Restaurant
 from services.restaurant_service import RestaurantService
 
 app = FastAPI()
+
+# Instância global do SQLite
 DATABASE = DB()
 
 @app.post("/restaurants")
 def create_restaurant(email: str, password: str, restaurant_name: str, commission: float):
     """
     API 1: Creates a single restaurant
-    """
-    request = Restaurant(None, email, password, restaurant_name, commission, []) 
-    result = request.verificar_tudo()
+    """   
+    restaurant = Restaurant(pk=None, email=email, password=password, restaurant_name=restaurant_name, commission=commission, menu=[])
+
+    # Valida campos
+    erro = restaurant.verificar_validacoes()
+    if erro:
+        return erro
     
-    if result:
-            return result
-    else:
-        return("restaurante NÂO cadastrado")
+    # Verifica duplicidade
+    if DATABASE.exists_restaurant(email, restaurant_name):
+        return "Restaurante ou email já cadastrado."
+
+    # Salva no banco (SQLite gera o PK)
+    DATABASE.create_restaurant(restaurant)
+    return f"Restaurante {restaurant.restaurant_name} cadastrado com sucesso!"
+
 
 @app.post("/restaurants/menu")
 def add_product(email: str, password: str, name: str, price: float):
     """
     API 2: Creates a product for a given restaurant
     """
-
     service = RestaurantService(email, password)
 
-    if not service.restaurant:
+    if not service._is_authenticated():
         return "Falha no login: restaurante não encontrado."
 
     return service.add_product(name, price)
@@ -50,7 +56,7 @@ def get_restaurants_list():
     """
     API 4: List all restaurants sorted by commission
     """
-    return DATABASE.get_restaurants() 
+    return DATABASE.get_restaurants()
 
 
 @app.patch("/restaurants")
